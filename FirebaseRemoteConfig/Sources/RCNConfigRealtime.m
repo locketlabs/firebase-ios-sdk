@@ -574,6 +574,11 @@ static NSInteger const gMaxRetries = 7;
     didReceiveData:(NSData *)data {
   NSError *dataError;
   NSString *strData = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (!strData) {
+    FIRLogDebug(kFIRLoggerRemoteConfig, @"I-RCN000083",
+                @"Ignoring realtime stream data that is not valid UTF-8.");
+    return;
+  }
 
   /// If response data contains the API enablement link, return the entire message to the user in
   /// the form of a error.

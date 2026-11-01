@@ -18,6 +18,12 @@
 
 # Firebase Apple Open Source Development
 
+## Locket fork releases
+
+`release/12.12.1` maintains only Locket's backported fixes on upstream `12.12.1`. Releases use immutable `12.12.1-locket.N` tags and exact version requirements, following the Locket Nimbus fork convention.
+
+`12.12.1-locket.1` backports the realtime UTF-8 guard from [firebase/firebase-ios-sdk#16760](https://github.com/firebase/firebase-ios-sdk/pull/16760) with focused regression coverage. `Package.swift`, the SDK version constant, binary artifact URLs/checksums and transitive requirements remain unchanged; published binary artifacts are reused without rebuilding or republishing them.
+
 This repository contains the source code for all Apple platform Firebase SDKs except FirebaseAnalytics.
 
 Firebase is an app development platform with tools to help you build, grow, and
