@@ -1,3 +1,6 @@
+# Locket 12.19.3-locket.1
+- [fixed] Buffer realtime update messages across network reads. (#16828)
+
 # 12.17.0
 - [fixed] Fixed a memory leak in Remote Config where `activateWithCompletion:`
   retained the `FIRRemoteConfig` instance indefinitely (#16413).
