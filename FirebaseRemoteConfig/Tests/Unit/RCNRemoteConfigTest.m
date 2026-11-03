@@ -82,6 +82,7 @@
     (RCNConfigUpdateCompletion _Nonnull)listener;
 - (void)removeConfigUpdateListener:(RCNConfigUpdateCompletion _Nonnull)listener;
 - (void)evaluateStreamResponse:(NSDictionary *)response error:(NSError *)dataError;
+- (void)propagateErrors:(NSError *)error;
 
 @end
 
