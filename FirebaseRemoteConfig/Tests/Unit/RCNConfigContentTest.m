@@ -146,6 +146,19 @@ extern const NSTimeInterval kDatabaseLoadTimeoutSecs;
                         @"value2");
 }
 
+- (void)testUpdateConfigContentSkipsDictionaryEntry {
+  NSDictionary *response = @{
+    @"state" : @"UPDATE",
+    @"entries" : @{@"invalid" : @{@"nested" : @"value"}, @"valid" : @"value"}
+  };
+  XCTAssertNoThrow([_configContent updateConfigContentWithResponse:response
+                                                      forNamespace:_namespaceGoogleMobilePlatform]);
+
+  NSDictionary *fetchedConfig = _configContent.fetchedConfig[_namespaceGoogleMobilePlatform];
+  XCTAssertNil(fetchedConfig[@"invalid"]);
+  XCTAssertEqualObjects([fetchedConfig[@"valid"] stringValue], @"value");
+}
+
 /// Verify that fetchedConfig is overwritten for a new fetch call.
 - (void)testUpdateConfigContentWithStatusUpdateWithDifferentKeys {
   NSMutableDictionary *configToSet =

@@ -356,6 +356,9 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
 
     // Store the fetched config values.
     for (NSString *key in entries) {
+      if (![entries[key] isKindOfClass:[NSString class]]) {
+        continue;
+      }
       NSData *valueData = [entries[key] dataUsingEncoding:NSUTF8StringEncoding];
       if (!valueData) {
         continue;
