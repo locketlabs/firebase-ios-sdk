@@ -153,13 +153,6 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
       }];
 }
 
-/// Update the current config result to main table.
-/// @param values Values in a row to write to the table.
-/// @param source The source the config data is coming from. It determines which table to write to.
-- (void)updateMainTableWithValues:(NSArray *)values fromSource:(RCNDBSource)source {
-  [_DBManager insertMainTableWithValues:values fromSource:source completionHandler:nil];
-}
-
 #pragma mark - update
 /// This function is for copying dictionary when user set up a default config or when user clicks
 /// activate. For now the DBSource can only be Active or Default.
@@ -196,10 +189,9 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
       break;
   }
 
-  // Completely wipe out DB first.
-  [_DBManager deleteRecordFromMainTableWithNamespace:FIRNamespace
-                                    bundleIdentifier:_bundleIdentifier
-                                          fromSource:DBSource];
+  // The namespace's rows are replaced in one transaction once all values are collected, so an
+  // interrupted write can't leave a partial or duplicated config in the database.
+  NSMutableArray<NSArray *> *rows = [[NSMutableArray alloc] init];
 
   toDict[FIRNamespace] = [[NSMutableDictionary alloc] init];
   NSDictionary *config = fromDict[FIRNamespace];
@@ -244,16 +236,19 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
       }
       toDict[FIRNamespace][key] = [[FIRRemoteConfigValue alloc] initWithData:valueData
                                                                       source:source];
-      NSArray *values = @[ _bundleIdentifier, FIRNamespace, key, valueData ];
-      [self updateMainTableWithValues:values fromSource:DBSource];
+      [rows addObject:@[ _bundleIdentifier, FIRNamespace, key, valueData ]];
     } else {
       FIRRemoteConfigValue *value = config[key];
       toDict[FIRNamespace][key] = [[FIRRemoteConfigValue alloc] initWithData:value.dataValue
                                                                       source:source];
-      NSArray *values = @[ _bundleIdentifier, FIRNamespace, key, value.dataValue ];
-      [self updateMainTableWithValues:values fromSource:DBSource];
+      [rows addObject:@[ _bundleIdentifier, FIRNamespace, key, value.dataValue ]];
     }
   }
+  [_DBManager replaceMainTableRowsWithNamespace:FIRNamespace
+                               bundleIdentifier:_bundleIdentifier
+                                           rows:rows
+                                     fromSource:DBSource
+                              completionHandler:nil];
 }
 
 - (void)updateConfigContentWithResponse:(NSDictionary *)response
@@ -356,10 +351,9 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
                 @"Entries field in fetch response is not a dictionary. Update dropped.");
     return;
   }
-  // Clear before updating
-  [_DBManager deleteRecordFromMainTableWithNamespace:currentNamespace
-                                    bundleIdentifier:_bundleIdentifier
-                                          fromSource:RCNDBSourceFetched];
+  // The namespace's rows are replaced in one transaction once all values are collected, so an
+  // interrupted write can't leave a partial or duplicated config in the database.
+  NSMutableArray<NSArray *> *rows = [[NSMutableArray alloc] init];
 
   @synchronized(self) {
     if ([_fetchedConfig objectForKey:currentNamespace]) {
@@ -382,10 +376,14 @@ const NSTimeInterval kDatabaseLoadTimeoutSecs = 30.0;
       }
       _fetchedConfig[currentNamespace][key] =
           [[FIRRemoteConfigValue alloc] initWithData:valueData source:FIRRemoteConfigSourceRemote];
-      NSArray *values = @[ _bundleIdentifier, currentNamespace, key, valueData ];
-      [self updateMainTableWithValues:values fromSource:RCNDBSourceFetched];
+      [rows addObject:@[ _bundleIdentifier, currentNamespace, key, valueData ]];
     }
   }
+  [_DBManager replaceMainTableRowsWithNamespace:currentNamespace
+                               bundleIdentifier:_bundleIdentifier
+                                           rows:rows
+                                     fromSource:RCNDBSourceFetched
+                              completionHandler:nil];
 }
 
 - (void)handleUpdatePersonalization:(NSDictionary *)metadata {

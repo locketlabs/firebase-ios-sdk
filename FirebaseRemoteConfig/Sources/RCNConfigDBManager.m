@@ -1059,14 +1059,16 @@ static NSArray *RemoteConfigMetadataTableColumnsInOrder(void) {
 - (NSMutableDictionary *)loadMainTableWithBundleIdentifier:(NSString *)bundleIdentifier
                                                 fromSource:(RCNDBSource)source {
   NSMutableDictionary *namespaceToConfig = [[NSMutableDictionary alloc] init];
+  // Rows are read in `_id` order so that, if an interrupted write left more than one row for a
+  // key, the newest row (highest `_id`) wins.
   const char *SQL = "SELECT bundle_identifier, namespace, key, value FROM " RCNTableNameMain
-                    " WHERE bundle_identifier = ?";
+                    " WHERE bundle_identifier = ? ORDER BY _id";
   if (source == RCNDBSourceDefault) {
     SQL = "SELECT bundle_identifier, namespace, key, value FROM " RCNTableNameMainDefault
-          " WHERE bundle_identifier = ?";
+          " WHERE bundle_identifier = ? ORDER BY _id";
   } else if (source == RCNDBSourceActive) {
     SQL = "SELECT bundle_identifier, namespace, key, value FROM " RCNTableNameMainActive
-          " WHERE bundle_identifier = ?";
+          " WHERE bundle_identifier = ? ORDER BY _id";
   }
   NSArray *params = @[ bundleIdentifier ];
   sqlite3_stmt *statement = [self prepareSQL:SQL];
@@ -1102,6 +1104,106 @@ static NSArray *RemoteConfigMetadataTableColumnsInOrder(void) {
   }
   sqlite3_finalize(statement);
   return namespaceToConfig;
+}
+
+#pragma mark - replace
+
+- (void)replaceMainTableRowsWithNamespace:(NSString *)namespace_p
+                         bundleIdentifier:(NSString *)bundleIdentifier
+                                     rows:(NSArray<NSArray *> *)rows
+                               fromSource:(RCNDBSource)source
+                        completionHandler:(RCNDBCompletion)handler {
+  NSArray<NSArray *> *rowsCopy = [rows copy];
+  __weak RCNConfigDBManager *weakSelf = self;
+  dispatch_async(_databaseOperationQueue, ^{
+    RCNConfigDBManager *strongSelf = weakSelf;
+    BOOL success = strongSelf && [strongSelf replaceMainTableRowsWithNamespace:namespace_p
+                                                              bundleIdentifier:bundleIdentifier
+                                                                          rows:rowsCopy
+                                                                    fromSource:source];
+    if (handler) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        handler(success, nil);
+      });
+    }
+  });
+}
+
+- (BOOL)replaceMainTableRowsWithNamespace:(NSString *)namespace_p
+                         bundleIdentifier:(NSString *)bundleIdentifier
+                                     rows:(NSArray<NSArray *> *)rows
+                               fromSource:(RCNDBSource)source {
+  RCN_MUST_NOT_BE_MAIN_THREAD();
+  if (!namespace_p || !bundleIdentifier) {
+    return NO;
+  }
+  if (![self executeQuery:"BEGIN IMMEDIATE TRANSACTION"]) {
+    return NO;
+  }
+  const char *deleteSQL =
+      "DELETE FROM " RCNTableNameMain " WHERE bundle_identifier = ? and namespace = ?";
+  if (source == RCNDBSourceDefault) {
+    deleteSQL =
+        "DELETE FROM " RCNTableNameMainDefault " WHERE bundle_identifier = ? and namespace = ?";
+  } else if (source == RCNDBSourceActive) {
+    deleteSQL =
+        "DELETE FROM " RCNTableNameMainActive " WHERE bundle_identifier = ? and namespace = ?";
+  }
+  BOOL success = [self executeQuery:deleteSQL withParams:@[ bundleIdentifier, namespace_p ]];
+  for (NSArray *row in rows) {
+    if (!success) {
+      break;
+    }
+    success = [self insertMainTableWithValues:row fromSource:source];
+  }
+  if (success && [self executeQuery:"COMMIT TRANSACTION"]) {
+    return YES;
+  }
+  FIRLogError(kFIRLoggerRemoteConfig, @"I-RCN000085",
+              @"Failed to replace config rows for namespace %@. Keeping the previous rows.",
+              namespace_p);
+  [self executeQuery:"ROLLBACK TRANSACTION"];
+  return NO;
+}
+
+- (NSInteger)duplicateMainTableRowCountWithNamespace:(NSString *)namespace_p
+                                    bundleIdentifier:(NSString *)bundleIdentifier
+                                          fromSource:(RCNDBSource)source {
+  if (!namespace_p || !bundleIdentifier) {
+    return 0;
+  }
+  __block NSInteger count = 0;
+  __weak RCNConfigDBManager *weakSelf = self;
+  dispatch_sync(_databaseOperationQueue, ^{
+    RCNConfigDBManager *strongSelf = weakSelf;
+    if (!strongSelf) {
+      return;
+    }
+    const char *SQL =
+        "SELECT COALESCE(SUM(c - 1), 0) FROM (SELECT COUNT(*) AS c FROM " RCNTableNameMain
+        " WHERE bundle_identifier = ? and namespace = ? GROUP BY key)";
+    if (source == RCNDBSourceDefault) {
+      SQL =
+          "SELECT COALESCE(SUM(c - 1), 0) FROM (SELECT COUNT(*) AS c FROM " RCNTableNameMainDefault
+          " WHERE bundle_identifier = ? and namespace = ? GROUP BY key)";
+    } else if (source == RCNDBSourceActive) {
+      SQL = "SELECT COALESCE(SUM(c - 1), 0) FROM (SELECT COUNT(*) AS c FROM " RCNTableNameMainActive
+            " WHERE bundle_identifier = ? and namespace = ? GROUP BY key)";
+    }
+    sqlite3_stmt *statement = [strongSelf prepareSQL:SQL];
+    if (!statement) {
+      return;
+    }
+    if (![strongSelf bindStringsToStatement:statement
+                                stringArray:@[ bundleIdentifier, namespace_p ]]) {
+      return;
+    }
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+      count = (NSInteger)sqlite3_column_int64(statement, 0);
+    }
+    sqlite3_finalize(statement);
+  });
+  return count;
 }
 
 #pragma mark - delete

@@ -961,4 +961,190 @@
   };
 }
 
+#pragma mark - Transactional writes and duplicate rows
+
+- (NSData *)dataFromString:(NSString *)string {
+  return [string dataUsingEncoding:NSUTF8StringEncoding];
+}
+
+/// Loads the main tables synchronously and returns {fetched, active}.
+- (NSArray<NSDictionary *> *)loadFetchedAndActiveConfig {
+  XCTestExpectation *loaded = [self expectationWithDescription:@"load main tables"];
+  __block NSDictionary *fetched;
+  __block NSDictionary *active;
+  [_DBManager loadMainWithBundleIdentifier:[NSBundle mainBundle].bundleIdentifier
+                         completionHandler:^(
+                             BOOL success, NSDictionary *fetchedConfig, NSDictionary *activeConfig,
+                             NSDictionary *defaultConfig, NSDictionary *unusedRolloutMetadata) {
+                           XCTAssertTrue(success);
+                           fetched = fetchedConfig;
+                           active = activeConfig;
+                           [loaded fulfill];
+                         }];
+  [self waitForExpectations:@[ loaded ] timeout:_expectionTimeout];
+  return @[ fetched ?: @{}, active ?: @{} ];
+}
+
+- (void)testReplaceMainTableRowsReplacesOnlyThatNamespace {
+  NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+  NSString *namespace_p = @"replace_namespace";
+  NSString *otherNamespace = @"replace_other_namespace";
+  [_DBManager insertMainTableWithValues:@[
+    bundleIdentifier, namespace_p, @"key1", [self dataFromString:@"old"]
+  ]
+                             fromSource:RCNDBSourceFetched
+                      completionHandler:nil];
+  [_DBManager insertMainTableWithValues:@[
+    bundleIdentifier, namespace_p, @"removedKey", [self dataFromString:@"stale"]
+  ]
+                             fromSource:RCNDBSourceFetched
+                      completionHandler:nil];
+  [_DBManager insertMainTableWithValues:@[
+    bundleIdentifier, otherNamespace, @"key1", [self dataFromString:@"other"]
+  ]
+                             fromSource:RCNDBSourceFetched
+                      completionHandler:nil];
+
+  XCTestExpectation *replaced = [self expectationWithDescription:@"replace"];
+  [_DBManager replaceMainTableRowsWithNamespace:namespace_p
+                               bundleIdentifier:bundleIdentifier
+                                           rows:@[
+                                             @[
+                                               bundleIdentifier, namespace_p, @"key1",
+                                               [self dataFromString:@"new"]
+                                             ],
+                                             @[
+                                               bundleIdentifier, namespace_p, @"key2",
+                                               [self dataFromString:@"added"]
+                                             ]
+                                           ]
+                                     fromSource:RCNDBSourceFetched
+                              completionHandler:^(BOOL success, NSDictionary *result) {
+                                XCTAssertTrue(success);
+                                [replaced fulfill];
+                              }];
+  [self waitForExpectations:@[ replaced ] timeout:_expectionTimeout];
+
+  NSDictionary *fetched = [self loadFetchedAndActiveConfig][0];
+  XCTAssertEqual([fetched[namespace_p] count], 2U);
+  XCTAssertEqualObjects([fetched[namespace_p][@"key1"] stringValue], @"new");
+  XCTAssertEqualObjects([fetched[namespace_p][@"key2"] stringValue], @"added");
+  XCTAssertNil(fetched[namespace_p][@"removedKey"]);
+  XCTAssertEqualObjects([fetched[otherNamespace][@"key1"] stringValue], @"other");
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:namespace_p
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceFetched],
+                 0);
+}
+
+- (void)testFailedReplaceRollsBackAndKeepsPreviousRows {
+  NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+  NSString *namespace_p = @"rollback_namespace";
+  [_DBManager insertMainTableWithValues:@[
+    bundleIdentifier, namespace_p, @"key1", [self dataFromString:@"kept"]
+  ]
+                             fromSource:RCNDBSourceActive
+                      completionHandler:nil];
+
+  // The second row is malformed, so the write fails part way through, after the DELETE and the
+  // first INSERT have run.
+  XCTestExpectation *replaced = [self expectationWithDescription:@"replace"];
+  [_DBManager replaceMainTableRowsWithNamespace:namespace_p
+                               bundleIdentifier:bundleIdentifier
+                                           rows:@[
+                                             @[
+                                               bundleIdentifier, namespace_p, @"key1",
+                                               [self dataFromString:@"partial"]
+                                             ],
+                                             @[ bundleIdentifier, namespace_p, @"key2" ]
+                                           ]
+                                     fromSource:RCNDBSourceActive
+                              completionHandler:^(BOOL success, NSDictionary *result) {
+                                XCTAssertFalse(success);
+                                [replaced fulfill];
+                              }];
+  [self waitForExpectations:@[ replaced ] timeout:_expectionTimeout];
+
+  NSDictionary *active = [self loadFetchedAndActiveConfig][1];
+  XCTAssertEqual([active[namespace_p] count], 1U);
+  XCTAssertEqualObjects([active[namespace_p][@"key1"] stringValue], @"kept");
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:namespace_p
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceActive],
+                 0);
+
+  // The database is still usable after the rollback.
+  XCTestExpectation *retried = [self expectationWithDescription:@"retry"];
+  [_DBManager replaceMainTableRowsWithNamespace:namespace_p
+                               bundleIdentifier:bundleIdentifier
+                                           rows:@[ @[
+                                             bundleIdentifier, namespace_p, @"key1",
+                                             [self dataFromString:@"retried"]
+                                           ] ]
+                                     fromSource:RCNDBSourceActive
+                              completionHandler:^(BOOL success, NSDictionary *result) {
+                                XCTAssertTrue(success);
+                                [retried fulfill];
+                              }];
+  [self waitForExpectations:@[ retried ] timeout:_expectionTimeout];
+  active = [self loadFetchedAndActiveConfig][1];
+  XCTAssertEqualObjects([active[namespace_p][@"key1"] stringValue], @"retried");
+}
+
+// Rows left behind by an interrupted, non-transactional write from an earlier SDK version.
+- (void)testDuplicateRowsLoadNewestValueAndAreCountedUntilReplaced {
+  NSString *bundleIdentifier = [NSBundle mainBundle].bundleIdentifier;
+  NSString *namespace_p = @"duplicate_namespace";
+  for (NSNumber *source in @[ @(RCNDBSourceFetched), @(RCNDBSourceActive) ]) {
+    for (NSString *value in @[ @"oldest", @"older", @"newest" ]) {
+      [_DBManager insertMainTableWithValues:@[
+        bundleIdentifier, namespace_p, @"key1", [self dataFromString:value]
+      ]
+                                 fromSource:(RCNDBSource)source.integerValue
+                          completionHandler:nil];
+    }
+    [_DBManager insertMainTableWithValues:@[
+      bundleIdentifier, namespace_p, @"unique", [self dataFromString:@"only"]
+    ]
+                               fromSource:(RCNDBSource)source.integerValue
+                        completionHandler:nil];
+  }
+
+  NSArray<NSDictionary *> *configs = [self loadFetchedAndActiveConfig];
+  for (NSDictionary *config in configs) {
+    XCTAssertEqualObjects([config[namespace_p][@"key1"] stringValue], @"newest");
+    XCTAssertEqualObjects([config[namespace_p][@"unique"] stringValue], @"only");
+  }
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:namespace_p
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceFetched],
+                 2);
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:namespace_p
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceActive],
+                 2);
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:@"missing_namespace"
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceActive],
+                 0);
+
+  XCTestExpectation *replaced = [self expectationWithDescription:@"replace"];
+  [_DBManager replaceMainTableRowsWithNamespace:namespace_p
+                               bundleIdentifier:bundleIdentifier
+                                           rows:@[ @[
+                                             bundleIdentifier, namespace_p, @"key1",
+                                             [self dataFromString:@"newest"]
+                                           ] ]
+                                     fromSource:RCNDBSourceActive
+                              completionHandler:^(BOOL success, NSDictionary *result) {
+                                XCTAssertTrue(success);
+                                [replaced fulfill];
+                              }];
+  [self waitForExpectations:@[ replaced ] timeout:_expectionTimeout];
+  XCTAssertEqual([_DBManager duplicateMainTableRowCountWithNamespace:namespace_p
+                                                    bundleIdentifier:bundleIdentifier
+                                                          fromSource:RCNDBSourceActive],
+                 0);
+}
+
 @end

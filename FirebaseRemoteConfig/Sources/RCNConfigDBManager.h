@@ -112,6 +112,26 @@ typedef void (^RCNDBLoadCompletion)(BOOL success,
                                     value:(NSArray<NSDictionary *> *)metadataList
                         completionHandler:(RCNDBCompletion)handler;
 
+/// Atomically replaces every row of the given namespace in a main config table.
+///
+/// The DELETE and all INSERTs run in one SQLite transaction on the database queue. If any
+/// statement fails, the transaction is rolled back and the previous rows are kept, so an
+/// interrupted write can't leave a partial or duplicated config behind.
+/// @param rows     Rows to insert. Each row is `@[bundleIdentifier, namespace, key, value]`.
+/// @param handler  Optional callback, called on the main queue with whether the commit succeeded.
+- (void)replaceMainTableRowsWithNamespace:(NSString *)namespace_p
+                         bundleIdentifier:(NSString *)bundleIdentifier
+                                     rows:(NSArray<NSArray *> *)rows
+                               fromSource:(RCNDBSource)source
+                        completionHandler:(RCNDBCompletion)handler;
+
+/// Returns the number of surplus rows in a main config table for the given namespace: for each
+/// key stored more than once, every row except the newest one counts. A healthy table returns 0.
+/// Runs synchronously on the database queue, so don't call it from that queue.
+- (NSInteger)duplicateMainTableRowCountWithNamespace:(NSString *)namespace_p
+                                    bundleIdentifier:(NSString *)bundleIdentifier
+                                          fromSource:(RCNDBSource)source;
+
 /// Clear the record of given namespace and package name
 /// before updating the table.
 - (void)deleteRecordFromMainTableWithNamespace:(NSString *)namespace_p
