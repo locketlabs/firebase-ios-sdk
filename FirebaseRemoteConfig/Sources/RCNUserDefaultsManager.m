@@ -275,6 +275,19 @@ static NSString *const kRCNUserDefaultsKeyCustomSignals = @"customSignals";
   [self resetInstanceUserDefaults];
 }
 
+- (void)clearLastETag {
+  @synchronized(_userDefaults) {
+    NSMutableDictionary *appUserDefaults = [[self appUserDefaults] mutableCopy];
+    NSMutableDictionary *appNamespaceUserDefaults = [[self instanceUserDefaults] mutableCopy];
+    [appNamespaceUserDefaults removeObjectForKey:kRCNUserDefaultsKeyNamelastETag];
+    [appNamespaceUserDefaults removeObjectForKey:kRCNUserDefaultsKeyNamelastETagUpdateTime];
+    [appUserDefaults setObject:appNamespaceUserDefaults forKey:_firebaseNamespace];
+    [_userDefaults setObject:appUserDefaults forKey:_firebaseAppName];
+    // We need to synchronize to have this value updated for the extension.
+    [_userDefaults synchronize];
+  }
+}
+
 #pragma mark Private methods.
 
 // There is a nested hierarchy for the userdefaults as follows:

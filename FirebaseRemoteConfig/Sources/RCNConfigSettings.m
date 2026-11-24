@@ -354,6 +354,32 @@ static const int kRCNExponentialBackoffMaximumInterval = 60 * 60 * 4;  // 4 hour
   [_userDefaultsManager setLastActiveTemplateVersion:_lastActiveTemplateVersion];
 }
 
+- (BOOL)shouldActivateFetchedConfig:(BOOL)hasFetchedConfig {
+  NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+  NSTimeInterval lastApplyTime = self.lastApplyTimeInterval;
+  if (lastApplyTime > now) {
+    // Saved while the device clock was ahead. Comparing against it would ignore every eTag saved
+    // after the clock was corrected.
+    lastApplyTime = 0;
+  }
+  NSTimeInterval lastETagUpdateTime = self.lastETagUpdateTime;
+  if (lastETagUpdateTime > 0 && lastETagUpdateTime > lastApplyTime) {
+    return YES;
+  }
+  // The eTag timestamps can disagree with the stored config, for example after a restore or a
+  // clock change. A fetched template whose version differs from the active one hasn't been
+  // activated yet, whatever the timestamps say. "0" means the version is unknown.
+  NSString *fetchedVersion = self.lastFetchedTemplateVersion;
+  NSString *activeVersion = self.lastActiveTemplateVersion;
+  return hasFetchedConfig && fetchedVersion.length > 0 && ![fetchedVersion isEqualToString:@"0"] &&
+         ![fetchedVersion isEqualToString:activeVersion];
+}
+
+- (void)resetActivationStateForFullFetch {
+  [_userDefaultsManager clearLastETag];
+  self.lastApplyTimeInterval = 0;
+}
+
 #pragma mark - fetch request
 
 /// Returns a fetch request with the latest device and config change.

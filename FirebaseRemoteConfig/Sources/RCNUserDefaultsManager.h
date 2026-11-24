@@ -63,6 +63,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Delete all saved userdefaults for this instance.
 - (void)resetUserDefaults;
+/// Removes the saved eTag and its update time, so the next fetch omits `If-None-Match`.
+- (void)clearLastETag;
 @end
 
 NS_ASSUME_NONNULL_END

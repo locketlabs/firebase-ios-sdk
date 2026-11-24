@@ -57,6 +57,23 @@ static const NSUInteger FIRRemoteConfigCustomSignalsMaxStringValueLength = 500;
 /// Maximum number of custom signals allowed.
 static const NSUInteger FIRRemoteConfigCustomSignalsMaxCount = 100;
 
+@interface FIRRemoteConfigDuplicateRowCounts ()
+- (instancetype)initWithFetched:(NSInteger)fetched active:(NSInteger)active;
+@end
+
+@implementation FIRRemoteConfigDuplicateRowCounts
+
+- (instancetype)initWithFetched:(NSInteger)fetched active:(NSInteger)active {
+  self = [super init];
+  if (self) {
+    _fetched = fetched;
+    _active = active;
+  }
+  return self;
+}
+
+@end
+
 /// Listener for the get methods.
 typedef void (^FIRRemoteConfigListener)(NSString *_Nonnull, NSDictionary *_Nonnull);
 
@@ -425,8 +442,11 @@ typedef void (^FIRRemoteConfigActivateChangeCompletion)(BOOL changed, NSError *_
     }
     // Check if the last fetched config has already been activated. Fetches with no data change are
     // ignored.
-    if (strongSelf->_settings.lastETagUpdateTime == 0 ||
-        strongSelf->_settings.lastETagUpdateTime <= strongSelf->_settings.lastApplyTimeInterval) {
+    // An empty fetched config never activates on a template version mismatch alone, so a lost
+    // fetched table can't replace the active values with nothing.
+    BOOL hasFetchedConfig =
+        [strongSelf->_configContent.fetchedConfig[strongSelf->_FIRNamespace] count] > 0;
+    if (![strongSelf->_settings shouldActivateFetchedConfig:hasFetchedConfig]) {
       FIRLogDebug(kFIRLoggerRemoteConfig, @"I-RCN000069",
                   @"Most recently fetched config is already activated.");
       if (completion) {
@@ -595,6 +615,70 @@ typedef void (^FIRRemoteConfigActivateChangeCompletion)(BOOL changed, NSError *_
     currentStatus = self->_settings.lastFetchStatus;
   });
   return currentStatus;
+}
+
+#pragma mark - Activation diagnostics and recovery
+
+- (NSString *)lastFetchedTemplateVersion {
+  __block NSString *version;
+  dispatch_sync(_queue, ^{
+    version = [self->_settings.lastFetchedTemplateVersion copy];
+  });
+  return version ?: @"0";
+}
+
+- (NSString *)lastActiveTemplateVersion {
+  __block NSString *version;
+  dispatch_sync(_queue, ^{
+    version = [self->_settings.lastActiveTemplateVersion copy];
+  });
+  return version ?: @"0";
+}
+
+- (NSTimeInterval)lastETagUpdateTime {
+  __block NSTimeInterval time;
+  dispatch_sync(_queue, ^{
+    time = self->_settings.lastETagUpdateTime;
+  });
+  return time;
+}
+
+- (NSTimeInterval)lastApplyTimeInterval {
+  __block NSTimeInterval time;
+  dispatch_sync(_queue, ^{
+    time = self->_settings.lastApplyTimeInterval;
+  });
+  return time;
+}
+
+- (void)loadDuplicateConfigRowCountsWithCompletion:
+    (void (^)(FIRRemoteConfigDuplicateRowCounts *counts))completion {
+  RCNConfigDBManager *DBManager = _DBManager;
+  NSString *bundleIdentifier = _settings.bundleIdentifier;
+  NSString *FIRNamespace = _FIRNamespace;
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSInteger fetched = [DBManager duplicateMainTableRowCountWithNamespace:FIRNamespace
+                                                          bundleIdentifier:bundleIdentifier
+                                                                fromSource:RCNDBSourceFetched];
+    NSInteger active = [DBManager duplicateMainTableRowCountWithNamespace:FIRNamespace
+                                                         bundleIdentifier:bundleIdentifier
+                                                               fromSource:RCNDBSourceActive];
+    completion([[FIRRemoteConfigDuplicateRowCounts alloc] initWithFetched:fetched active:active]);
+  });
+}
+
+- (void)resetActivationStateForFullFetchWithCompletion:(void (^)(void))completion {
+  dispatch_async(_queue, ^{
+    [self->_settings resetActivationStateForFullFetch];
+    FIRLogInfo(
+        kFIRLoggerRemoteConfig, @"I-RCN000086",
+        @"Cleared the saved eTag and apply time. The next fetch requests the full template.");
+    if (completion) {
+      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        completion();
+      });
+    }
+  });
 }
 
 - (NSArray *)allKeysFromSource:(FIRRemoteConfigSource)source {

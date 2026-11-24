@@ -197,6 +197,24 @@ NS_SWIFT_NAME(RemoteConfigUpdate)
 
 @end
 
+#pragma mark - FIRRemoteConfigDuplicateRowCounts
+/// Number of surplus rows in the Remote Config database for this instance's namespace. For each
+/// key stored more than once, every row except the newest one counts. A healthy database reports
+/// 0 for both tables.
+///
+/// Diagnostics added by the Locket fork; not part of the upstream Firebase API.
+NS_SWIFT_NAME(RemoteConfigDuplicateRowCounts)
+@interface FIRRemoteConfigDuplicateRowCounts : NSObject
+
+/// Surplus rows in the fetched config table (`main`).
+@property(nonatomic, readonly) NSInteger fetched;
+/// Surplus rows in the active config table (`main_active`).
+@property(nonatomic, readonly) NSInteger active;
+
+- (nonnull instancetype)init NS_UNAVAILABLE;
+
+@end
+
 #pragma mark - FIRRemoteConfig
 /// Firebase Remote Config class. The class method `remoteConfig()` can be used
 /// to fetch, activate and read config results and set default config results on the default
@@ -355,6 +373,54 @@ NS_SWIFT_NAME(RemoteConfig)
 /// @param completion Activate operation callback with changed and error parameters.
 - (void)activateWithCompletion:(void (^_Nullable)(BOOL changed,
                                                   NSError *_Nullable error))completion;
+#endif
+
+#pragma mark - Activation diagnostics and recovery (Locket fork)
+
+/// The template version of the last successful fetch, or "0" when unknown.
+@property(nonatomic, readonly, copy, nonnull) NSString *lastFetchedTemplateVersion;
+/// The template version that was fetched when config was last activated, or "0" when unknown.
+@property(nonatomic, readonly, copy, nonnull) NSString *lastActiveTemplateVersion;
+/// When the SDK last saved a fetch eTag, in seconds since 1970 on the device clock, or 0 if no
+/// eTag is saved. `activate` applies the fetched config when this is later than
+/// `lastApplyTimeInterval`.
+@property(nonatomic, readonly) NSTimeInterval lastETagUpdateTime;
+/// When config was last activated, in seconds since 1970 on the device clock, or 0 if never.
+@property(nonatomic, readonly) NSTimeInterval lastApplyTimeInterval;
+
+#if (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 180000)
+/// Counts duplicate rows in the fetched and active config tables for this instance. Read-only.
+/// @param completion Called on a background queue with the counts.
+- (void)loadDuplicateConfigRowCountsWithCompletion:
+    (void (^_Nonnull NS_SWIFT_SENDABLE)(FIRRemoteConfigDuplicateRowCounts *_Nonnull counts))
+        completion NS_SWIFT_NAME(loadDuplicateConfigRowCounts(completion:));
+
+/// Clears the saved eTag, its update time and the last apply time, so the next fetch requests the
+/// full template and the following `activate` applies it. Fetched and active values are kept, and
+/// the database file is never deleted.
+///
+/// This doesn't bypass `minimumFetchInterval`; fetch with an expiration duration of 0 afterwards
+/// to request the template right away.
+/// @param completion Called on a background queue once the state is cleared.
+- (void)resetActivationStateForFullFetchWithCompletion:
+    (void (^_Nullable NS_SWIFT_SENDABLE)(void))completion
+    NS_SWIFT_NAME(resetActivationStateForFullFetch(completion:));
+#else
+/// Counts duplicate rows in the fetched and active config tables for this instance. Read-only.
+/// @param completion Called on a background queue with the counts.
+- (void)loadDuplicateConfigRowCountsWithCompletion:
+    (void (^_Nonnull)(FIRRemoteConfigDuplicateRowCounts *_Nonnull counts))completion
+    NS_SWIFT_NAME(loadDuplicateConfigRowCounts(completion:));
+
+/// Clears the saved eTag, its update time and the last apply time, so the next fetch requests the
+/// full template and the following `activate` applies it. Fetched and active values are kept, and
+/// the database file is never deleted.
+///
+/// This doesn't bypass `minimumFetchInterval`; fetch with an expiration duration of 0 afterwards
+/// to request the template right away.
+/// @param completion Called on a background queue once the state is cleared.
+- (void)resetActivationStateForFullFetchWithCompletion:(void (^_Nullable)(void))completion
+    NS_SWIFT_NAME(resetActivationStateForFullFetch(completion:));
 #endif
 
 #pragma mark - Get Config

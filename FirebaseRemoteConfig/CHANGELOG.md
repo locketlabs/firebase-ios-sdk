@@ -2,6 +2,16 @@
 - [fixed] Fixed an issue where Remote Config returns empty data after device
   restore if the app was opened with an SDK version older than 12.6.0 before
   upgrading. (#15764)
+- [fixed] (Locket fork) Each namespace's fetched, active and default rows are
+  now replaced in one database transaction, so an interrupted write keeps the
+  previous rows. When a key is stored more than once, the newest row wins.
+- [fixed] (Locket fork) `activate` no longer stays pinned to an old config when
+  the last apply time is later than the device clock, or when the fetched
+  template version differs from the active one.
+- [added] (Locket fork) Read-only activation diagnostics on `RemoteConfig`
+  (template versions, eTag and apply times, duplicate row counts) and
+  `resetActivationStateForFullFetch(completion:)` to force the next fetch to
+  request the full template.
 
 # 13.2.0
 - [fixed] Fixed a crash when copying a `RemoteConfigValue` (`FIRRemoteConfigValue`).
