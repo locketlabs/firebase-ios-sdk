@@ -1864,6 +1864,52 @@ static NSString *UTCToLocal(NSString *utcTime) {
   }
 }
 
+// A launch straight into the background starts paused, and becoming active resumes the stream.
+- (void)testRealtimeResumesWhenBecomingActiveAfterBackgroundLaunch {
+  for (int i = 0; i < RCNTestRCNumTotalInstances; i++) {
+    XCTestExpectation *expectation =
+        [self expectationWithDescription:[NSString stringWithFormat:@"Resume - instance %d", i]];
+    OCMStub([_configRealtime[i] beginRealtimeStream]).andDo(nil);
+    [_configRealtime[i] setValue:@YES forKey:@"_isInBackground"];
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"UIApplicationDidBecomeActiveNotification"
+                      object:nil];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_checkCompletionTimeout * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          XCTAssertFalse([[self->_configRealtime[i] valueForKey:@"_isInBackground"] boolValue]);
+          OCMVerify([self->_configRealtime[i] beginRealtimeStream]);
+          [expectation fulfill];
+        });
+
+    [self waitForExpectationsWithTimeout:_expectationTimeout handler:nil];
+  }
+}
+
+// Becoming active again while in the foreground, for example after Control Center, changes nothing.
+- (void)testRealtimeIgnoresBecomingActiveInTheForeground {
+  for (int i = 0; i < RCNTestRCNumTotalInstances; i++) {
+    XCTestExpectation *expectation =
+        [self expectationWithDescription:[NSString stringWithFormat:@"Ignore - instance %d", i]];
+    OCMStub([_configRealtime[i] beginRealtimeStream]).andDo(nil);
+    [_configRealtime[i] setValue:@NO forKey:@"_isInBackground"];
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"UIApplicationDidBecomeActiveNotification"
+                      object:nil];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_checkCompletionTimeout * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          XCTAssertFalse([[self->_configRealtime[i] valueForKey:@"_isInBackground"] boolValue]);
+          OCMVerify(never(), [self->_configRealtime[i] beginRealtimeStream]);
+          [expectation fulfill];
+        });
+
+    [self waitForExpectationsWithTimeout:_expectationTimeout handler:nil];
+  }
+}
+
 - (void)testRealtimeUpdatesBackoffMetadataWhenRetryIntervalIsProvided {
   NSMutableArray<XCTestExpectation *> *expectations =
       [[NSMutableArray alloc] initWithCapacity:RCNTestRCNumTotalInstances];
@@ -2642,7 +2688,7 @@ static NSString *UTCToLocal(NSString *utcTime) {
   }];
   XCTAssertTrue(changed);
   XCTAssertEqualObjects(_configInstances[i][@"key1-2"].stringValue, @"value1-2");
-  XCTAssertEqualObjects(_configInstances[i].lastActiveTemplateVersion, @"7");
+  XCTAssertEqualObjects(_settings.lastActiveTemplateVersion, @"7");
   XCTAssertFalse([self activateSecondApp]);
 }
 

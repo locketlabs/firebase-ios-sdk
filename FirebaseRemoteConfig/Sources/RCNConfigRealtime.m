@@ -16,6 +16,7 @@
 
 #import "FirebaseRemoteConfig/Sources/RCNConfigRealtime.h"
 #import <Foundation/Foundation.h>
+#import <GoogleUtilities/GULAppEnvironmentUtil.h>
 #import <GoogleUtilities/GULNSData+zlib.h>
 #import "FirebaseCore/Extension/FirebaseCoreInternal.h"
 #import "FirebaseInstallations/Source/Library/Private/FirebaseInstallationsInternal.h"
@@ -23,6 +24,10 @@
 #import "FirebaseRemoteConfig/Sources/Private/RCNConfigSettings.h"
 #import "FirebaseRemoteConfig/Sources/RCNConfigConstants.h"
 #import "FirebaseRemoteConfig/Sources/RCNDevice.h"
+
+#if TARGET_OS_IOS || TARGET_OS_TV || (defined(TARGET_OS_VISION) && TARGET_OS_VISION)
+#import <UIKit/UIKit.h>
+#endif
 
 /// URL params
 static NSString *const kServerURLDomain = @"https://firebaseremoteconfigrealtime.googleapis.com";
@@ -138,7 +143,7 @@ static NSTimeInterval const kRealtimeMaxRetryIntervalSeconds = 60 * 60 * 24;
     _remainingRetryCount = MAX(gMaxRetries - [_settings realtimeRetryCount], 1);
     _isRequestInProgress = false;
     _isRealtimeDisabled = false;
-    _isInBackground = false;
+    _isInBackground = [RCNConfigRealtime isAppInBackground];
     _pendingStreamData = [[NSMutableData alloc] init];
 
     [self setUpHttpRequest];
@@ -415,10 +420,33 @@ static NSTimeInterval const kRealtimeMaxRetryIntervalSeconds = 60 * 60 * 24;
   });
 }
 
+/// Whether the app is already in the background, as when it launches for a silent push or a
+/// background task. No background notification is posted for such a launch, so the stream would
+/// otherwise open and then be cut off when the app is suspended. Outside the main thread and in app
+/// extensions, the app is treated as in the foreground.
++ (BOOL)isAppInBackground {
+#if TARGET_OS_IOS || TARGET_OS_TV || (defined(TARGET_OS_VISION) && TARGET_OS_VISION)
+  if (![NSThread isMainThread] || [GULAppEnvironmentUtil isAppExtension]) {
+    return NO;
+  }
+  UIApplication *application = [UIApplication performSelector:@selector(sharedApplication)];
+  return application.applicationState == UIApplicationStateBackground;
+#else
+  return NO;
+#endif
+}
+
 - (void)backgroundChangeListener {
   [_notificationCenter addObserver:self
                           selector:@selector(isInForeground)
                               name:@"UIApplicationWillEnterForegroundNotification"
+                            object:nil];
+
+  // A scene-based app reports the background state while it launches into the foreground. The
+  // foreground notification that follows resumes the stream, and becoming active is a fallback.
+  [_notificationCenter addObserver:self
+                          selector:@selector(didBecomeActive)
+                              name:@"UIApplicationDidBecomeActiveNotification"
                             object:nil];
 
   [_notificationCenter addObserver:self
@@ -431,6 +459,19 @@ static NSTimeInterval const kRealtimeMaxRetryIntervalSeconds = 60 * 60 * 24;
   __weak RCNConfigRealtime *weakSelf = self;
   dispatch_async(_realtimeLockQueue, ^{
     __strong RCNConfigRealtime *strongSelf = weakSelf;
+    strongSelf->_isInBackground = false;
+    [strongSelf beginRealtimeStream];
+  });
+}
+
+- (void)didBecomeActive {
+  __weak RCNConfigRealtime *weakSelf = self;
+  dispatch_async(_realtimeLockQueue, ^{
+    __strong RCNConfigRealtime *strongSelf = weakSelf;
+    // Only a stream paused for the background resumes here; an active app is left as it is.
+    if (!strongSelf || !strongSelf->_isInBackground) {
+      return;
+    }
     strongSelf->_isInBackground = false;
     [strongSelf beginRealtimeStream];
   });

@@ -5,6 +5,9 @@
 - [fixed] `activate` no longer stays pinned to an old config when the last
   apply time is later than the device clock, or when the fetched template
   version differs from the active one.
+- [fixed] The realtime stream no longer opens when the app launches in the
+  background, for example for a silent push. It opens once the app enters the
+  foreground. (#15737)
 
 # 13.2.0
 - [fixed] Fixed a crash when copying a `RemoteConfigValue` (`FIRRemoteConfigValue`).
