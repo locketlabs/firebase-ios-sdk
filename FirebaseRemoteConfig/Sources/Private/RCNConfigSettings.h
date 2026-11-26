@@ -77,9 +77,9 @@
 /// The timestamp of the last eTag update.
 @property(nonatomic, readwrite, assign) NSTimeInterval lastETagUpdateTime;
 /// Last fetched template version.
-@property(nonatomic, readwrite, assign) NSString *lastFetchedTemplateVersion;
+@property(nonatomic, readwrite, copy) NSString *lastFetchedTemplateVersion;
 /// Last active template version.
-@property(nonatomic, readwrite, assign) NSString *lastActiveTemplateVersion;
+@property(nonatomic, readwrite, copy) NSString *lastActiveTemplateVersion;
 
 #pragma mark - Custom Signals
 
@@ -141,6 +141,14 @@
 
 /// Update last active template version from last fetched template version.
 - (void)updateLastActiveTemplateVersion;
+
+/// Returns whether `activate` should copy the fetched config to the active config.
+///
+/// Activates when an eTag was saved after the last activation, or when the last fetched template
+/// version differs from the active one while a fetched config exists. An apply time in the future
+/// (saved while the device clock was ahead) is treated as 0, so it can't pin the active config.
+/// @param hasFetchedConfig Whether a non-empty fetched config exists for this namespace.
+- (BOOL)shouldActivateFetchedConfig:(BOOL)hasFetchedConfig;
 
 /// Returns the difference between the Realtime backoff end time and the current time in a
 /// NSTimeInterval format.

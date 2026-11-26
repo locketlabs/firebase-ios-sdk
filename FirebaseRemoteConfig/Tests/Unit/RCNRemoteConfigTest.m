@@ -2579,4 +2579,99 @@ static NSString *UTCToLocal(NSString *utcTime) {
                                }];
 }
 
+#pragma mark - Activation gate, diagnostics and recovery
+
+/// Fetches on the second app instance, then runs `afterFetch` before activating, and returns
+/// whether activation reported a change.
+- (BOOL)fetchThenActivateSecondAppAfter:(void (^)(void))afterFetch {
+  int i = RCNTestRCInstanceSecondApp;
+  XCTestExpectation *done = [self expectationWithDescription:@"fetch then activate"];
+  __block BOOL activationChanged = NO;
+  [_configInstances[i]
+      fetchWithExpirationDuration:0
+                completionHandler:^(FIRRemoteConfigFetchStatus status, NSError *error) {
+                  XCTAssertEqual(status, FIRRemoteConfigFetchStatusSuccess);
+                  if (afterFetch) {
+                    afterFetch();
+                  }
+                  [self->_configInstances[i]
+                      activateWithCompletion:^(BOOL changed, NSError *activateError) {
+                        XCTAssertNil(activateError);
+                        activationChanged = changed;
+                        [done fulfill];
+                      }];
+                }];
+  [self waitForExpectations:@[ done ] timeout:_expectationTimeout];
+  return activationChanged;
+}
+
+- (BOOL)activateSecondApp {
+  XCTestExpectation *done = [self expectationWithDescription:@"activate"];
+  __block BOOL activationChanged = NO;
+  [_configInstances[RCNTestRCInstanceSecondApp]
+      activateWithCompletion:^(BOOL changed, NSError *error) {
+        activationChanged = changed;
+        [done fulfill];
+      }];
+  [self waitForExpectations:@[ done ] timeout:_expectationTimeout];
+  return activationChanged;
+}
+
+// An apply time saved while the device clock was ahead must not hide later fetches.
+- (void)testFutureApplyTimeDoesNotPinActiveConfig {
+  int i = RCNTestRCInstanceSecondApp;
+  NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+  BOOL changed = [self fetchThenActivateSecondAppAfter:^{
+    self->_settings.lastApplyTimeInterval = now + 24 * 60 * 60;
+  }];
+  XCTAssertTrue(changed);
+  XCTAssertEqualObjects(_configInstances[i][@"key1-2"].stringValue, @"value1-2");
+  XCTAssertLessThanOrEqual(_settings.lastApplyTimeInterval,
+                           [[NSDate date] timeIntervalSince1970]);
+  // Once activated with a sane apply time, the same fetch isn't activated again.
+  XCTAssertFalse([self activateSecondApp]);
+}
+
+- (void)testTemplateVersionMismatchActivatesEvenWhenTimestampsSayApplied {
+  int i = RCNTestRCInstanceSecondApp;
+  BOOL changed = [self fetchThenActivateSecondAppAfter:^{
+    self->_settings.lastETagUpdateTime = 100;
+    self->_settings.lastApplyTimeInterval = 200;
+    self->_settings.lastFetchedTemplateVersion = @"7";
+    self->_settings.lastActiveTemplateVersion = @"6";
+  }];
+  XCTAssertTrue(changed);
+  XCTAssertEqualObjects(_configInstances[i][@"key1-2"].stringValue, @"value1-2");
+  XCTAssertEqualObjects(_configInstances[i].lastActiveTemplateVersion, @"7");
+  XCTAssertFalse([self activateSecondApp]);
+}
+
+- (void)testMatchingTemplateVersionsAndAppliedTimestampsDoNotActivate {
+  BOOL changed = [self fetchThenActivateSecondAppAfter:^{
+    self->_settings.lastETagUpdateTime = 100;
+    self->_settings.lastApplyTimeInterval = 200;
+    self->_settings.lastFetchedTemplateVersion = @"7";
+    self->_settings.lastActiveTemplateVersion = @"7";
+  }];
+  XCTAssertFalse(changed);
+}
+
+- (void)testTemplateVersionMismatchWithoutFetchedConfigDoesNotActivate {
+  _settings.lastETagUpdateTime = 100;
+  _settings.lastApplyTimeInterval = 200;
+  _settings.lastFetchedTemplateVersion = @"7";
+  _settings.lastActiveTemplateVersion = @"6";
+  XCTAssertFalse([self activateSecondApp]);
+}
+
+- (void)testUnknownFetchedTemplateVersionDoesNotActivate {
+  BOOL changed = [self fetchThenActivateSecondAppAfter:^{
+    self->_settings.lastETagUpdateTime = 100;
+    self->_settings.lastApplyTimeInterval = 200;
+    self->_settings.lastFetchedTemplateVersion = @"0";
+    self->_settings.lastActiveTemplateVersion = @"6";
+  }];
+  XCTAssertFalse(changed);
+}
+
 @end

@@ -425,8 +425,11 @@ typedef void (^FIRRemoteConfigActivateChangeCompletion)(BOOL changed, NSError *_
     }
     // Check if the last fetched config has already been activated. Fetches with no data change are
     // ignored.
-    if (strongSelf->_settings.lastETagUpdateTime == 0 ||
-        strongSelf->_settings.lastETagUpdateTime <= strongSelf->_settings.lastApplyTimeInterval) {
+    // An empty fetched config never activates on a template version mismatch alone, so a lost
+    // fetched table can't replace the active values with nothing.
+    BOOL hasFetchedConfig =
+        [strongSelf->_configContent.fetchedConfig[strongSelf->_FIRNamespace] count] > 0;
+    if (![strongSelf->_settings shouldActivateFetchedConfig:hasFetchedConfig]) {
       FIRLogDebug(kFIRLoggerRemoteConfig, @"I-RCN000069",
                   @"Most recently fetched config is already activated.");
       if (completion) {
